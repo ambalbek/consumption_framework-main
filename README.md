@@ -1,173 +1,411 @@
+# Consumption Framework
 
-# Consumption Framework tools
+A set of tools to help Elasticsearch users understand the consumption patterns of their deployments — resource allocation, ingest patterns, cost attribution, and growth planning — surfaced through Kibana dashboards.
 
-This repository contains various tools aiming to help Elasticsearch users better understand the consumption patterns of their deployments. They don't aim to be purely used in cost reduction / optimization efforts, but rather to help users understand resource allocation, and how to better plan for growth.
+**Supported Elasticsearch versions:** 8.x and 9.x
 
-Namely, thanks to the data these tool can gather, and the Kibana dashboards through which they can be visualized, users can:
+---
 
-- Understand ingest patterns and cost allocation for their entire organization.
-- Explore billing data in ways that are not offered out-of-the-box by Elastic Cloud interface.
-- Understand how much data is being indexed, and how storage is being used.
+## Table of Contents
 
-## Screenshots
+- [What it does](#what-it-does)
+- [How it works](#how-it-works)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+  - [Option A: Python (local)](#option-a-python-local)
+  - [Option B: Docker (recommended for ops / no-Python environments)](#option-b-docker)
+- [Configuration](#configuration)
+  - [Config file reference](#config-file-reference)
+  - [Elasticsearch version compatibility](#elasticsearch-version-compatibility)
+- [Commands reference](#commands-reference)
+- [Permissions](#permissions)
+- [Kibana dashboards](#kibana-dashboards)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## What it does
+
+With the data collected and the included Kibana dashboards you can:
+
+- Understand ingest patterns and cost allocation across your entire organization.
+- Explore billing data in ways not available out-of-the-box in the Elastic Cloud console.
+- See how much data is being indexed and how storage is used per datastream and tier.
 
 <details>
-
-<summary>Click to expand</summary>
+<summary>Dashboard screenshots</summary>
 
 ![Organization overview](./images/organization_overview.png)
-
 ![Deployment dashboard](./images/deployment_dashboard.png)
-
 ![Datastream analysis](./images/datastream_analysis.png)
-
 ![Tier analysis](./images/tier_analysis.png)
 
 </details>
 
+---
 
-## How to use?
-
-The `main.py` script exposes multiple commands:
-
-```bash
-Usage: main.py [OPTIONS] COMMAND [ARGS]...
-
-Options:
-  --help  Show this message and exit.
-
-Commands:
-  consume-monitoring  Consume monitoring data from an existing cluster
-  get-billing-data    Recover org-level billing data from ESS
-  init                Initialize the target cluster
-```
-
-- `init` will create the index templates, ILM policy and ingest pipelines required for the other commands to work.
-- `get-billing-data` will recover the billing data from ESS, and index it into the target cluster. This will populate the organization overview dashboard.
-- `consume-monitoring` will consume monitoring data from an existing cluster, and index it into the target cluster. This will populate all further dashboards and give you the most granularity about your data and its usage.
-
-## How does it work?
-
-The ingestion is made as following :
-
-1. ESS clusters are sending their metrics to a centralized [monitoring instance](https://www.elastic.co/guide/en/cloud/current/ec-enable-logging-and-monitoring.html)
-2. The script consume native _.monitoring*_ index and send to a visualization cluster.
+## How it works
 
 ```mermaid
-  graph TD;
-      subgraph Zone 1
-      elastic-clusters-zone1-1(Elastic Cluster)-->|metrics|monitoring-cluster-zone1(monitoring-cluster>8.x)
-      elastic-clusters-zone1-2(Elastic Cluster)-->|metrics|monitoring-cluster-zone1
-      elastic-clusters-zone1-3(Elastic Cluster)-->|metrics|monitoring-cluster-zone1
-      end
-      subgraph Zone 2
-      elastic-clusters-zone2-1(Elastic Cluster)-->|metrics|monitoring-cluster-zone2(monitoring-cluster>8.x)
-      elastic-clusters-zone2-2(Elastic Cluster)-->|metrics|monitoring-cluster-zone2
-      elastic-clusters-zone2-3(Elastic Cluster)-->|metrics|monitoring-cluster-zone2
-      end
-      script<-->monitoring-cluster-zone1
-      script<-->monitoring-cluster-zone2
-      script<-->visualization-cluster
-      visualization-cluster<-->Kibana
+graph TD;
+    subgraph Zone 1
+    elastic-clusters-zone1-1(Elastic Cluster)-->|metrics|monitoring-cluster-zone1(monitoring-cluster ≥8.x)
+    elastic-clusters-zone1-2(Elastic Cluster)-->|metrics|monitoring-cluster-zone1
+    elastic-clusters-zone1-3(Elastic Cluster)-->|metrics|monitoring-cluster-zone1
+    end
+    subgraph Zone 2
+    elastic-clusters-zone2-1(Elastic Cluster)-->|metrics|monitoring-cluster-zone2(monitoring-cluster ≥8.x)
+    elastic-clusters-zone2-2(Elastic Cluster)-->|metrics|monitoring-cluster-zone2
+    elastic-clusters-zone2-3(Elastic Cluster)-->|metrics|monitoring-cluster-zone2
+    end
+    script<-->monitoring-cluster-zone1
+    script<-->monitoring-cluster-zone2
+    script<-->visualization-cluster
+    visualization-cluster<-->Kibana
 ```
 
-More information about the execution model can be found in [this deck](https://docs.google.com/presentation/d/1aJutCxUlVtnDaTwz-QwcaWMex133edXl-CmV-KeOXPU/edit#slide=id.g2ac43bd4279_0_0) (Elasticians-only link).
+1. Your Elasticsearch clusters ship metrics to a centralized [monitoring cluster](https://www.elastic.co/guide/en/cloud/current/ec-enable-logging-and-monitoring.html) via built-in monitoring collectors.
+2. The framework reads those native `.monitoring-es-*` indices, enriches index-level data with node/tier context, aggregates it per datastream + tier, and writes results to a destination cluster.
+3. Kibana dashboards visualize everything.
 
 ### Billing data
 
-The script hits the [billing APIs of ESS](https://www.elastic.co/guide/en/cloud/current/Billing_Costs_Analysis.html) and saves the results to your target cluster, in a format that can then be easily consumed through Kibana dashboards. Since the data is saved on Elastic side, you can go back as far as you'd like in time, and the script will only fetch the data that is not already present in the target cluster.
+Hits the [ESS billing API](https://www.elastic.co/guide/en/cloud/current/Billing_Costs_Analysis.html) and indexes results into the destination cluster for the organization overview dashboard. Already-processed time windows are skipped automatically.
 
 ### Monitoring data
 
-The based principle of this command is to piggyback on existing monitoring data, collected by built-in monitoring collectors. The main challenges are:
+Processes monitoring data across 10-minute chunks and enriches index-level metrics with tier/node context. Cost is ventilated to each datastream across three dimensions: storage size, query time, and indexing time.
 
-1. The data is collected on the index level, and therefore needs to be tied in to business-level information such as the data tier or the datastream.
-2. The counters on which the data is based are reset upon shard movement, it is therefore necessary to compare data points with one another in order to understand the evolution of the metrics, rather than the instantaneous value of the counter.
+---
 
-To tackle these challenges, the script will not strictly look at a point in time, but rather the evolution of monitoring data across 10-minutes chunks, and enrich the index-level information with context coming from the nodes where the indices are hosted. Since the shard of an index can move at any point during these 10 minutes chunk, it is important to note that the results should be considered as approximations.
+## Prerequisites
 
-Once index-level data is properly contextualized, it is then aggregated at the datastream + tier level and billing information is ventilated to the datastreams according to their fractional usage of the tier. 3 dimensions are used to ventilate the billing information:
+| Requirement | Notes |
+|---|---|
+| Elasticsearch cluster(s) | 8.x or 9.x — source (monitoring) and destination can be the same cluster |
+| Stack monitoring enabled | Internal collection must be active on source clusters |
+| API keys | See [Permissions](#permissions) |
+| Python 3.11+ **or** Docker | For running the framework |
 
-- Storage size. A datastream that uses 10% of the storage of a tier will be allocated 10% of total cost of the tier.
-- Query time. A datastream that uses 10% of the query time of a tier will be allocated 10% of total cost of the tier.
-- Indexing time. A datastream that uses 10% of the indexing time of a tier will be allocated 10% of total cost of the tier.
+---
 
-Even though each individual dimension alone doesn't accurately represent the full business usage of a datastream, the combination of the 3 dimensions and most importantly the discrepancies among them can help users understand the usage of their data.
+## Quick Start
 
-## FAQ
+### Step 1 — Create your config file
 
-Please see [this document](https://docs.google.com/document/d/1QlAValDdp8B0oFABdeSemeBH3ukPj7agulg68AhXfUM/edit#heading=h.3v16o5fpcokw) (Elasticians-only link) for FAQ.
+Copy the sample and fill in your values:
 
-## Configuration file
+```bash
+cp config.yml.sample config.yml
+```
 
-The configuration file is a YAML file that contains the following information
+Minimal config (Elastic Cloud / ESS):
 
 ```yaml
----
-# The name of your organization, this will be populated on every single resulting document
-organization_name: "Change me"
+organization_name: "My Org"
+organization_id: "12345"          # from cloud.elastic.co → Account → Organization ID
+billing_api_key: "essu_XXXX"      # needs billing-admin permissions
 
-# The organization ID from Elastic Cloud, for ESS deployments.
-# You can comment this out for on-premises deployments
-organization_id: "12345"
-
-# The billing API key for your organization
-# You can comment this out for on-premises deployments
-billing_api_key: "essu_XXXX"
-
-# Where we'll read the monitoring data from
 monitoring_source:
-  hosts: 'https://where-i-want-to-get-the-data:443'
-  api_key: 'ZZZZZZZZZZZ'
+  cloud_id: 'deployment-name:BASE64STRING'
+  api_key: 'SOURCE_API_KEY'
   retry_on_timeout: true
   request_timeout: 60
 
-# Where the consumption data (result of the script's run) will be sent
-# This can be the same cluster as the source.
 consumption_destination:
-  hosts: 'https://where-i-want-the-data-to-be-indexed:443'
-  api_key: 'YYYYYYYYYYY'
-
-# For on-premises deployment, you'll need to specify the costs of your tier per 1 GB RAM per hour
-# on_prem_costs:
-#   hot: 1.0
-#   warm: 0.5
-#   cold: 0.25
-#   frozen: 0.1
-
-# Uncomment and modify this if you want to read indices other than the default monitoring ones
-# (for example using cross-cluster search)
-# monitoring_index_pattern: '.monitoring-es-8*'
-
-# Uncomment and modify this for Federal customers using a non-standard ESS endpoint
-# api_host: 'api.elastic-cloud.com'
+  cloud_id: 'deployment-name:BASE64STRING'
+  api_key: 'DESTINATION_API_KEY'
 ```
 
-* `organization_id` is the ID of your Elastic Cloud organization. This needs to match what is reported in ESS.
-* `organization_name` is the name of your Elastic Cloud organization. You can name it as you wish, it can be useful to aggregate multiple organization\_ids under the same name.
-* `billing_api_key` is the API key that will be used to fetch billing data from ESS. This key will require billing admin permissions, and needs to be generated for the target `organization_id`.
-* `monitoring_source` and `consumption_destination` (formerly `source` and `monitoring`) describe parameters natively passed to an [`Elasticsearch` client](https://elasticsearch-py.readthedocs.io/en/latest/api/elasticsearch.html). The `monitoring_source` section is used to fetch monitoring data from the source cluster, and the `consumption_destination` section is used to index the data into the target cluster. These can be identical, provided that the credentials have the proper permissions.
-* `on_prem_costs` is a mapping of the cost per GB of RAM per hour for each tier. This is used to compute the cost of on-prem clusters.
-* `monitoring_index_pattern` is the pattern used to fetch monitoring data. This is useful if you are using a custom pattern for your monitoring indices, or want to use CCS to query monitoring data across multiple clusters. The default value is `.monitoring-es-8*`.
-* `api_host` is the host of the ESS API. This is used to fetch billing data. The default value is `api.elastic-cloud.com`.
+Minimal config (on-premises):
 
-`organization_id`/`billing_api_key` and `on_prem_costs` are mutually exclusive.
+```yaml
+organization_name: "My Org"
 
-It is also possible to pass the configuration inline, using the `--config-inline` parameter. In that case, you should pass the configuration as a JSON string. You can also override individual parameters using the `--config KEY=VALUE` parameter (multiple times if needed).
+monitoring_source:
+  hosts: 'https://monitoring-cluster:9200'
+  api_key: 'SOURCE_API_KEY'
+  verify_certs: true
+  retry_on_timeout: true
+  request_timeout: 60
 
-## HOW-TO
+consumption_destination:
+  hosts: 'https://destination-cluster:9200'
+  api_key: 'DESTINATION_API_KEY'
 
-Check [this document](https://docs.google.com/document/d/1kyaO9CELxmrttmmIFQWWxLlgahOEaZU7PXG5jOz9b8g/edit) (Elasticians-only link, but ok to share a pdf externally) for a description of the deployment of the tool.
+on_prem_costs:
+  hot: 1.0
+  warm: 0.5
+  cold: 0.25
+  frozen: 0.1
+```
+
+---
+
+### Option A: Python (local)
+
+```bash
+# 1. Install dependencies (Python 3.11+ required)
+pip install -r requirements.txt
+
+# 2. Initialize the destination cluster (run once)
+python main.py init --config-file config.yml
+
+# 3. Fetch billing data (ESS only)
+python main.py get-billing-data --config-file config.yml --lookbehind 24
+
+# 4. Consume monitoring data
+python main.py consume-monitoring --config-file config.yml --lookbehind 24
+```
+
+Useful flags:
+
+| Flag | Description |
+|---|---|
+| `--lookbehind N` | Hours of history to process (default: 24) |
+| `--threads N` | Parallel worker threads (default: 5) |
+| `--force` | Reprocess data even if it already exists |
+| `--debug` | Verbose logging |
+| `--compute-usages` | Also compute per-age-bucket datastream usage (produces more documents) |
+
+---
+
+### Option B: Docker
+
+The Docker image is the recommended way to run the framework in production or hand it off to someone else — no Python environment needed.
+
+#### Build the image
+
+```bash
+docker build -t consumption-framework:latest .
+
+# Or using make:
+make build
+```
+
+#### Run with a config file (simplest)
+
+Mount your `config.yml` as a volume and pass the command as an argument:
+
+```bash
+# Initialize (run once)
+docker run --rm \
+  -v "$(pwd)/config.yml:/config.yml" \
+  consumption-framework:latest \
+  init --config-file /config.yml
+
+# Fetch billing data
+docker run --rm \
+  -v "$(pwd)/config.yml:/config.yml" \
+  consumption-framework:latest \
+  get-billing-data --config-file /config.yml --lookbehind 24
+
+# Consume monitoring data
+docker run --rm \
+  -v "$(pwd)/config.yml:/config.yml" \
+  consumption-framework:latest \
+  consume-monitoring --config-file /config.yml --lookbehind 24
+```
+
+#### Run with environment variables (no config file needed)
+
+The entrypoint translates `CF_` environment variables into CLI flags, and `CFCONF_` variables into `--config key=value` pairs.
+
+**`CF_` → CLI flag mapping:**
+`CF_LOOKBEHIND=48` becomes `--lookbehind 48`
+`CF_THREADS=10` becomes `--threads 10`
+`CF_CONFIG_FILE=/config.yml` becomes `--config-file /config.yml`
+
+**`CFCONF_` → `--config` mapping:**
+`CFCONF_ORGANIZATION__NAME=MyOrg` becomes `--config organization_name=MyOrg`
+`CFCONF_MONITORING__SOURCE__API__KEY=abc` becomes `--config monitoring_source.api_key=abc`
+
+Example — all configuration via environment variables:
+
+```bash
+docker run --rm \
+  -e CF_CONFIG_FILE=/config.yml \
+  -v "$(pwd)/config.yml:/config.yml" \
+  -e CF_LOOKBEHIND=48 \
+  -e CF_THREADS=10 \
+  consumption-framework:latest \
+  consume-monitoring
+```
+
+Or fully inline without a config file:
+
+```bash
+docker run --rm \
+  -e CFCONF_ORGANIZATION__NAME="My Org" \
+  -e CFCONF_ORGANIZATION__ID="12345" \
+  -e CFCONF_BILLING__API__KEY="essu_XXXX" \
+  -e CFCONF_MONITORING__SOURCE__CLOUD__ID="name:BASE64" \
+  -e CFCONF_MONITORING__SOURCE__API__KEY="src_key" \
+  -e CFCONF_CONSUMPTION__DESTINATION__CLOUD__ID="name:BASE64" \
+  -e CFCONF_CONSUMPTION__DESTINATION__API__KEY="dst_key" \
+  consumption-framework:latest \
+  consume-monitoring
+```
+
+#### Run as a scheduled container (cron-style)
+
+To run on a schedule (e.g., every 12 hours), use Docker's `--restart always` with a wrapper or a cron container. The simplest approach with plain Docker:
+
+```bash
+# Run in daemon mode, restarting every 12 hours via an external cron or scheduler
+docker run -d \
+  --name consumption-framework \
+  --restart always \
+  -v "$(pwd)/config.yml:/config.yml" \
+  consumption-framework:latest \
+  consume-monitoring --config-file /config.yml --lookbehind 24
+```
+
+Or trigger it from the host crontab (`crontab -e`):
+
+```cron
+# Every day at 6 AM and 6 PM
+0 6,18 * * * docker run --rm -v /path/to/config.yml:/config.yml consumption-framework:latest consume-monitoring --config-file /config.yml --lookbehind 13
+```
+
+#### Docker Compose example
+
+Create a `docker-compose.yml` alongside your `config.yml`:
+
+```yaml
+version: "3.8"
+
+services:
+  consumption-init:
+    image: consumption-framework:latest
+    build: .
+    volumes:
+      - ./config.yml:/config.yml
+    command: init --config-file /config.yml
+    restart: "no"
+
+  consumption-monitoring:
+    image: consumption-framework:latest
+    build: .
+    volumes:
+      - ./config.yml:/config.yml
+    command: consume-monitoring --config-file /config.yml --lookbehind 24
+    restart: "no"
+
+  consumption-billing:
+    image: consumption-framework:latest
+    build: .
+    volumes:
+      - ./config.yml:/config.yml
+    command: get-billing-data --config-file /config.yml --lookbehind 24
+    restart: "no"
+```
+
+```bash
+# Initialize (once)
+docker compose run --rm consumption-init
+
+# Run monitoring collection
+docker compose run --rm consumption-monitoring
+
+# Run billing collection (ESS only)
+docker compose run --rm consumption-billing
+```
+
+---
+
+## Configuration
+
+### Config file reference
+
+| Key | Required | Description |
+|---|---|---|
+| `organization_name` | Yes | Display name — written to every document |
+| `organization_id` | ESS only | Elastic Cloud organization ID |
+| `billing_api_key` | ESS only | API key with billing-admin rights |
+| `monitoring_source` | Yes | Elasticsearch client params for the monitoring cluster |
+| `consumption_destination` | Yes | Elasticsearch client params for the destination cluster |
+| `on_prem_costs` | On-prem only | Cost per GB RAM/hour per tier (mutually exclusive with `billing_api_key`) |
+| `monitoring_index_pattern` | No | Override default `.monitoring-es-8-*,.monitoring-es-9-*` (useful for CCS) |
+| `parsing_regex_str` | No | Custom regex for parsing datastream names from index names |
+| `api_host` | No | Override ESS API endpoint (default: `api.elastic-cloud.com`) |
+
+`monitoring_source` and `consumption_destination` accept any parameter supported by the [elasticsearch-py client](https://elasticsearch-py.readthedocs.io/en/latest/api/elasticsearch.html): `hosts`, `cloud_id`, `api_key`, `http_auth`, `verify_certs`, `request_timeout`, `retry_on_timeout`, etc.
+
+### Elasticsearch version compatibility
+
+The Python client version must match your Elasticsearch server major version:
+
+| ES server | Python client to install |
+|---|---|
+| 8.x (including 8.17.x) | `pip install "elasticsearch>=8.3.3,<9"` (default in `requirements.txt`) |
+| 9.x | Change `requirements.txt` line to `elasticsearch>=9.0.0,<10`, then `pip install -r requirements.txt` |
+
+For Docker with ES 9.x, edit `requirements.txt` before building:
+
+```bash
+sed -i 's/elasticsearch>=8.3.3,<9/elasticsearch>=9.0.0,<10/' requirements.txt
+docker build -t consumption-framework:latest .
+```
+
+The monitoring index pattern for ES 9.x clusters is already included in the default: `.monitoring-es-8-*,.monitoring-es-9-*`.
+
+> **Note:** Stack monitoring must be enabled on source clusters. For ES 8.x use `xpack.monitoring.elasticsearch.collection.enabled: true`. For ES 9.x, configure monitoring via Elastic Agent or Metricbeat and ensure data lands in `.monitoring-es-9-*` indices.
+
+---
+
+## Commands reference
+
+```
+python main.py [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
+```
+
+### `init`
+
+Creates required assets on the destination cluster (index template, ILM policy, ingest pipeline). **Run once** before first use, or after upgrading.
+
+```bash
+python main.py init --config-file config.yml
+```
+
+Requires `manage_ingest_pipelines`, `manage_ilm`, and `manage_index_templates` cluster privileges on the destination. Alternatively, upload files from `consumption/_meta/` manually via Kibana Dev Tools.
+
+### `consume-monitoring`
+
+Reads monitoring data from the source cluster and writes enriched consumption documents to the destination.
+
+```bash
+python main.py consume-monitoring --config-file config.yml \
+  --lookbehind 24 \
+  --threads 5 \
+  [--force] \
+  [--compute-usages] \
+  [--debug]
+```
+
+### `get-billing-data`
+
+Fetches org-level billing data from the ESS API. ESS deployments only.
+
+```bash
+python main.py get-billing-data --config-file config.yml \
+  --lookbehind 24 \
+  [--force] \
+  [--debug]
+```
+
+---
 
 ## Permissions
 
-In the `monitoring_source` cluster, the script will be reading the `.monitoring-es-8*` indices. The user (or API key) used to connect to the cluster will therefore need to have the corresponding `read` permission. The below API call can be used to provision the required API key on the `monitoring_source` cluster:
+### Source cluster (`monitoring_source`)
+
+The API key needs `read` access to `.monitoring-es-8-*` and `.monitoring-es-9-*`:
 
 <details>
+<summary>Create source API key (Dev Tools)</summary>
 
-<summary>Dev tools API call to create the source API key</summary>
-
-```
+```json
 POST /_security/api_key
 {
   "name": "consumption_framework_source",
@@ -175,12 +413,8 @@ POST /_security/api_key
     "consumption_framework": {
       "indices": [
         {
-          "names": [
-            ".monitoring-es-8*"
-          ],
-          "privileges": [
-            "read"
-          ]
+          "names": [".monitoring-es-8-*", ".monitoring-es-9-*"],
+          "privileges": ["read"]
         }
       ]
     }
@@ -190,24 +424,27 @@ POST /_security/api_key
 
 </details>
 
-In the `consumption_destination` cluster, the script will be writing to `consumption-[DATE]` indices. Again, the user needs to have the corresponding `index` and `auto_configure` permissions.
-The additional `read` permission on the index is necessary for backlog checks, preventing the script from re-computing already existing data (see the command help for more information).
+### Destination cluster (`consumption_destination`)
+
+The API key needs `read`, `index`, `view_index_metadata`, and `auto_configure` on `consumption*`. If running `init`, also needs cluster-level privileges:
 
 <details>
+<summary>Create destination API key (Dev Tools)</summary>
 
-<summary>Dev tools API call to create the destination API key</summary>
-
-```
+```json
 POST /_security/api_key
 {
   "name": "consumption_framework_destination",
   "role_descriptors": {
     "consumption_framework": {
+      "cluster": [
+        "manage_ingest_pipelines",
+        "manage_ilm",
+        "manage_index_templates"
+      ],
       "indices": [
         {
-          "names": [
-            "consumption*"
-          ],
+          "names": ["consumption*"],
           "privileges": [
             "read",
             "view_index_metadata",
@@ -223,6 +460,62 @@ POST /_security/api_key
 
 </details>
 
-Finally, if you want to use the `init` command, you will need to add the `manage_ingest_pipelines`, `manage_ilm` and `manage_index_templates` cluster privileges.
-You could also manually upload the ingest pipeline, ILM policy and index template from the [`consumption/_meta`](consumption/_meta) directory to your `consumption_destination` cluster.
+Once `init` has been run successfully, the cluster privileges can be removed from the key and you can use a more restricted key for ongoing data collection.
 
+---
+
+## Kibana dashboards
+
+Import the dashboards from the `kibana_exports/` directory:
+
+1. Open Kibana → **Stack Management → Saved Objects**
+2. Click **Import** and select the `.ndjson` files from `kibana_exports/`
+3. Set the index pattern to `consumption*`
+
+---
+
+## Troubleshooting
+
+### `UnsupportedProductError` or client refuses to connect
+
+Your elasticsearch-py client version does not match your server. See [Elasticsearch version compatibility](#elasticsearch-version-compatibility).
+
+### `KeyError: 'after_key'` in logs
+
+Upgrade to the latest version of this framework — this was a pagination bug fixed for ES 8.17+.
+
+### No data in dashboards after running
+
+1. Confirm `init` was run on the destination cluster.
+2. Check that stack monitoring is enabled and `.monitoring-es-8-*` (or `.monitoring-es-9-*`) indices exist on the source cluster and contain recent data.
+3. Run with `--debug` to see detailed query logs.
+4. Verify API key permissions on both clusters.
+
+### Script runs but produces 0 documents
+
+- The source cluster may have no monitoring data in the requested `--lookbehind` window.
+- The source API key may lack `read` on `.monitoring-es-*`.
+- Re-run with `--force` if data exists but was already processed.
+
+### SSL / certificate errors
+
+Add `verify_certs: false` under `monitoring_source` or `consumption_destination` in your config (not recommended for production). Alternatively, supply `ca_certs: /path/to/ca.pem`.
+
+### Running behind a proxy
+
+Set `HTTP_PROXY` / `HTTPS_PROXY` environment variables — the framework picks them up automatically.
+
+```bash
+export HTTPS_PROXY=http://proxy.example.com:8080
+python main.py consume-monitoring --config-file config.yml
+```
+
+For Docker:
+
+```bash
+docker run --rm \
+  -e HTTPS_PROXY=http://proxy.example.com:8080 \
+  -v "$(pwd)/config.yml:/config.yml" \
+  consumption-framework:latest \
+  consume-monitoring --config-file /config.yml
+```

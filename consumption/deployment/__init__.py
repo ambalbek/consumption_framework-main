@@ -78,9 +78,10 @@ def _source_walk(
     """
     after = (1e15, "")
     while True:
-        res = source_es.search(
+        response = source_es.search(
             index=index,
             size=0,
+            allow_no_indices=True,
             query={
                 "bool": {
                     "filter": [
@@ -135,9 +136,11 @@ def _source_walk(
                 }
             },
             filter_path=["aggregations"],
-        )["aggregations"]["composite"]
+        )
 
-        if not res["buckets"]:
+        res = (response or {}).get("aggregations", {}).get("composite", {})
+
+        if not res.get("buckets"):
             # We've gone through all the data in scope
             break
 

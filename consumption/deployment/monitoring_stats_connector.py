@@ -58,6 +58,7 @@ def get_all_elasticsearch_ids(
 ) -> List[str]:
     response = es.search(
         index=index,
+        allow_no_indices=True,
         query={
             "bool": {
                 "filter": [
@@ -210,6 +211,7 @@ class Stats(ABC):
             res = self.es.search(
                 index=self.monitoring_index_pattern or DEFAULT_MONITORING_INDEX_PATTERN,
                 size=0,
+                allow_no_indices=True,
                 query={"bool": {"filter": self.static_filters + filters}},
                 aggs=composite_fn(after_key),
                 filter_path=[
@@ -223,7 +225,13 @@ class Stats(ABC):
                 ],
             )
 
-            if not res:
+            # Newer ES versions may return a non-empty response with empty buckets
+            # instead of the empty {} that older versions returned via filter_path.
+            # Check explicitly so we don't hit a KeyError on missing after_key.
+            composite_agg = (res or {}).get("aggregations", {}).get("composite", {})
+            buckets = composite_agg.get("buckets") or []
+
+            if not buckets:
                 if count == 0:
                     raise NoResultsError(
                         f"Querying for stats {self.__class__.__name__} returned no results"
@@ -233,10 +241,10 @@ class Stats(ABC):
                 break
 
             # Used for next loop
-            after_key = res["aggregations"]["composite"]["after_key"]["per_key"]
+            after_key = composite_agg["after_key"]["per_key"]
 
             # Process the results
-            for entity_bucket in res["aggregations"]["composite"]["buckets"]:
+            for entity_bucket in buckets:
                 # We skip the first entry as it will be missing the derivative values
                 for ten_minute_bucket in entity_bucket["per_10_minutes"]["buckets"][1:]:
                     record = {
