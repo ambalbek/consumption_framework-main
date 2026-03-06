@@ -71,6 +71,12 @@ def with_click_options(func):
 
         # Override config_dict with individually passed config parameters
         for c in config:
+            if "=" not in c:
+                logger.error(
+                    f"Invalid --config entry '{c}': expected format key=value "
+                    f"(e.g. --config consumption_destination.cloud_id=MY_CLOUD_ID)"
+                )
+                sys.exit(1)
             key, value = c.split("=", 1)
 
             # key is a nested key, e.g. "consumption_destination.cloud_id"
