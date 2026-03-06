@@ -170,3 +170,5 @@ lambda_package*
 
 # Release packages
 *.zip
+*.claude
+*.buildkite
