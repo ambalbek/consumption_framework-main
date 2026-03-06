@@ -141,6 +141,13 @@ def _source_walk(
 
         res = (response or {}).get("aggregations", {}).get("composite", {})
 
+        logger.debug(
+            f"_source_walk query: index={index!r} "
+            f"range=[{range_start.isoformat()} → {min(range_end, datetime.now(pytz.utc).replace(minute=0, second=0, microsecond=0)).isoformat()}] "
+            f"buckets={len(res.get('buckets', []))} "
+            f"raw_agg_keys={list((response or {}).get('aggregations', {}).keys())}"
+        )
+
         if not res.get("buckets"):
             # We've gone through all the data in scope
             break
