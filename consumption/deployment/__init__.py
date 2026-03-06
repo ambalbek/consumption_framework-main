@@ -76,8 +76,33 @@ def _source_walk(
     We yield the elasticsearch_id and start of the hour for each block
     where we have monitoring data.
     """
-    after = (1e15, "")
+    after = None
     while True:
+        composite_params = {
+            "size": size,
+            "sources": [
+                {
+                    "per_hour": {
+                        "date_histogram": {
+                            "field": "@timestamp",
+                            "fixed_interval": "1h",
+                            "order": "desc",
+                        }
+                    }
+                },
+                {
+                    "per_elasticsearch_id": {
+                        "terms": {"field": "elasticsearch.cluster.name"}
+                    }
+                },
+            ],
+        }
+        if after is not None:
+            composite_params["after"] = {
+                "per_hour": after[0],
+                "per_elasticsearch_id": after[1],
+            }
+
         response = source_es.search(
             index=index,
             size=0,
@@ -109,33 +134,7 @@ def _source_walk(
                     ]
                 }
             },
-            aggs={
-                "composite": {
-                    "composite": {
-                        "after": {
-                            "per_hour": after[0],
-                            "per_elasticsearch_id": after[1],
-                        },
-                        "size": size,
-                        "sources": [
-                            {
-                                "per_hour": {
-                                    "date_histogram": {
-                                        "field": "@timestamp",
-                                        "fixed_interval": "1h",
-                                        "order": "desc",
-                                    }
-                                }
-                            },
-                            {
-                                "per_elasticsearch_id": {
-                                    "terms": {"field": "elasticsearch.cluster.name"}
-                                }
-                            },
-                        ],
-                    }
-                }
-            },
+            aggs={"composite": {"composite": composite_params}},
             filter_path=["aggregations"],
         )
 

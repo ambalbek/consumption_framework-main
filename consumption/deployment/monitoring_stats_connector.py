@@ -124,17 +124,19 @@ class Stats(ABC):
         self.es = es
         self.monitoring_index_pattern = monitoring_index_pattern
 
-    def _build_composite(self) -> Callable[[str, Optional[int]], Dict[str, Any]]:
-        def composite_fn(after_key: str, size: int = 100) -> Dict[str, Any]:
+    def _build_composite(self) -> Callable[[Optional[str], Optional[int]], Dict[str, Any]]:
+        def composite_fn(after_key: Optional[str], size: int = 100) -> Dict[str, Any]:
+            composite_params: Dict[str, Any] = {
+                "size": size,
+                "sources": [
+                    {"per_key": {"terms": {"field": self.key_field}}},
+                ],
+            }
+            if after_key is not None:
+                composite_params["after"] = {"per_key": after_key}
             return {
                 "composite": {
-                    "composite": {
-                        "after": {"per_key": after_key},
-                        "size": size,
-                        "sources": [
-                            {"per_key": {"terms": {"field": self.key_field}}},
-                        ],
-                    },
+                    "composite": composite_params,
                     "aggs": {
                         "per_10_minutes": {
                             "date_histogram": {
@@ -201,7 +203,7 @@ class Stats(ABC):
 
     def search(self, filters: List[Dict[str, Any]] = []):
         composite_fn = self._build_composite()
-        after_key = ""
+        after_key = None
         count = 0
 
         # Time the querying if we're on debug level
