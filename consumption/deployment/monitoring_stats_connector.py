@@ -59,6 +59,7 @@ def get_all_elasticsearch_ids(
     response = es.search(
         index=index,
         allow_no_indices=True,
+        expand_wildcards=["open", "hidden"],
         query={
             "bool": {
                 "filter": [
@@ -212,6 +213,7 @@ class Stats(ABC):
                 index=self.monitoring_index_pattern or DEFAULT_MONITORING_INDEX_PATTERN,
                 size=0,
                 allow_no_indices=True,
+                expand_wildcards=["open", "hidden"],
                 query={"bool": {"filter": self.static_filters + filters}},
                 aggs=composite_fn(after_key),
                 filter_path=[

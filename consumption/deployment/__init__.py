@@ -82,6 +82,7 @@ def _source_walk(
             index=index,
             size=0,
             allow_no_indices=True,
+            expand_wildcards=["open", "hidden"],
             query={
                 "bool": {
                     "filter": [
