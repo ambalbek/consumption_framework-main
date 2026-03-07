@@ -122,8 +122,7 @@ class MultithreadingEngine:
         Stop the workers.
         """
 
-        while not self.tasks_queue.empty():
-            pass
+        self.tasks_queue.join()
 
         logger.info("All tasks have been processed, stopping workers")
         self.running = False

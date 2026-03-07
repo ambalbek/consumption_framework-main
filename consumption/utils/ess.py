@@ -10,6 +10,12 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+class ESSURLs:
+    def __init__(self, api_host: str):
+        base = f"https://{api_host}/api/v2/billing/organizations"
+        self.ESS_BILLING_URL = base + "/%s/deployments/%s/items"
+
+
 class ESSBillingClient:
     def __init__(self, api_host: str, api_key: str, org_id: str):
         client = requests.Session()
@@ -35,7 +41,7 @@ class ESSBillingClient:
                 f"Got 429 from ESS API, sleeping for {backoff} seconds and retrying"
             )
             sleep(backoff)
-            return self._perform_request_with_backoff(self.url, params, backoff * 2)
+            return self._perform_request_with_backoff(params, backoff * 2)
 
         # Raise for other status codes
         response.raise_for_status()
@@ -169,4 +175,4 @@ class ESSResource(ESSLineItem):
             return
 
         self.quantity = self._ram_per_zone * self._zone_count
-        self._price_per_hour_per_gb = self.rate / self.quantity
+        self.price_per_hour_per_gb = self.rate / self.quantity

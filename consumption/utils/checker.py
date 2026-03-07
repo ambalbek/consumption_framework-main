@@ -29,7 +29,7 @@ class DataChecker:
                         + [
                             {
                                 "range": {
-                                    "timestamp": {
+                                    "@timestamp": {
                                         "gte": from_ts.isoformat(),
                                         "lt": to_ts.isoformat(),
                                     }

@@ -1,6 +1,6 @@
 from .checker import DepDataChecker, OrgDataChecker
 from .elasticsearch_client import ElasticsearchClient
-from .ess import ESSDTS, ESSBillingClient, ESSResource
+from .ess import ESSDTS, ESSBillingClient, ESSResource, ESSURLs
 from .multithreading_engine import MultithreadingEngine
 
 __all__ = [
@@ -11,4 +11,5 @@ __all__ = [
     "ElasticsearchClient",
     "ESSDTS",
     "ESSBillingClient",
+    "ESSURLs",
 ]

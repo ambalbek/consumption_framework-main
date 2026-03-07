@@ -53,7 +53,7 @@ class ESSBillingClientCostsProvider(ESSBillingClient):
                 and line_item["kind"] == "elasticsearch"
             ):
                 resource = ESSResource(line_item)
-                self.tier_prices[resource.tier] = resource._price_per_hour_per_gb
+                self.tier_prices[resource.tier] = resource.price_per_hour_per_gb
 
         # TODO: reuse the on_prem_costs function
         df = pd.DataFrame.from_dict(
@@ -92,7 +92,7 @@ def _source_walk(
                 },
                 {
                     "per_elasticsearch_id": {
-                        "terms": {"field": "elasticsearch.cluster.name"}
+                        "terms": {"field": "elasticsearch.cluster.name.keyword"}
                     }
                 },
             ],
